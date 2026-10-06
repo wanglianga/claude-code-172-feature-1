@@ -113,6 +113,13 @@ public class DeliveryController {
         return deliveryService.openCompartment(id);
     }
 
+    @Operation(summary = "用户下楼到大堂打开载物仓（电梯连续满载、通知下楼取件场景）")
+    @RequireRole({Role.OPS, Role.ADMIN})
+    @PostMapping("/{id}/downstairs-open-compartment")
+    public DeliveryOrder downstairsOpenCompartment(@PathVariable Long id) {
+        return deliveryService.openCompartmentDownstairs(id);
+    }
+
     @Operation(summary = "载物仓打不开（设备故障上报，触发客服介入）")
     @RequireRole({Role.OPS, Role.ADMIN})
     @PostMapping("/{id}/compartment-fault")
@@ -128,6 +135,21 @@ public class DeliveryController {
     @PostMapping("/{id}/sign")
     public DeliveryOrder sign(@PathVariable Long id, @Valid @RequestBody SignRequest request) {
         return deliveryService.sign(id, request.signBy());
+    }
+
+    public record DownstairsSignRequest(@NotBlank String signBy,
+                                        Boolean damageReported,
+                                        String damageNote) {
+    }
+
+    @Operation(summary = "用户下楼取件签收",
+            description = "电梯连续满载通知下楼后使用；商品损坏/延迟按用户取件阶段判定责任")
+    @RequireRole({Role.OPS, Role.ADMIN})
+    @PostMapping("/{id}/downstairs-sign")
+    public DeliveryOrder downstairsSign(@PathVariable Long id,
+                                        @Valid @RequestBody DownstairsSignRequest request) {
+        return deliveryService.signDownstairs(id, request.signBy(),
+                Boolean.TRUE.equals(request.damageReported()), request.damageNote());
     }
 
     public record ReturnRequest(@NotBlank String reason) {

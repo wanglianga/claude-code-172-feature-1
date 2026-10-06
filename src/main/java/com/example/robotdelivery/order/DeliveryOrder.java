@@ -2,11 +2,13 @@ package com.example.robotdelivery.order;
 
 import com.example.robotdelivery.community.Building;
 import com.example.robotdelivery.community.Community;
+import com.example.robotdelivery.elevator.ElevatorWaitStrategy;
 import com.example.robotdelivery.robot.Robot;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Getter
@@ -70,6 +72,45 @@ public class DeliveryOrder {
     /** 人工接力配送员 */
     @Column(name = "relay_courier", length = 64)
     private String relayCourier;
+
+    /** 电梯连续满载次数（每次上报满载 +1，派梯/乘梯成功后清零） */
+    @Column(name = "elevator_full_count", nullable = false)
+    private int elevatorFullCount;
+
+    /** 三次满载后的等待策略：继续等待/人工接力/通知用户下楼取件 */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "wait_strategy", length = 28)
+    private ElevatorWaitStrategy waitStrategy;
+
+    @Column(name = "wait_strategy_reason", length = 255)
+    private String waitStrategyReason;
+
+    @Column(name = "wait_strategy_decided_at")
+    private LocalDateTime waitStrategyDecidedAt;
+
+    /** 重算后的配送费用（人工接力时追加接力费） */
+    @Column(name = "delivery_fee", precision = 10, scale = 2)
+    private BigDecimal deliveryFee;
+
+    /** 费用构成明细（JSON 文本，含基础配送费/接力费/减免） */
+    @Column(name = "delivery_fee_detail", columnDefinition = "text")
+    private String deliveryFeeDetail;
+
+    /** 人工接力开始时间 */
+    @Column(name = "relay_started_at")
+    private LocalDateTime relayStartedAt;
+
+    /** 接力人员从机器人接货时间（载物仓交接完成） */
+    @Column(name = "handover_at")
+    private LocalDateTime handoverAt;
+
+    /** 通知用户下楼取件时间 */
+    @Column(name = "downstairs_notified_at")
+    private LocalDateTime downstairsNotifiedAt;
+
+    /** 用户楼下取件签收时间 */
+    @Column(name = "downstairs_pickup_at")
+    private LocalDateTime downstairsPickupAt;
 
     @Column(name = "assigned_at")
     private LocalDateTime assignedAt;

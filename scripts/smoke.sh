@@ -52,6 +52,31 @@ new_order() { # buildingId coldChain type -> order id
     \"userName\":\"张三\",\"userPhone\":\"13800000001\"}" | jq -r '.id'
 }
 
+new_order_eta() { # buildingId coldChain type etaIso -> order id
+  req POST /api/orders "$OPS" "{
+    \"orderType\":\"${3:-FOOD}\",\"communityId\":1,\"buildingId\":$1,
+    \"unitNo\":\"2单元\",\"roomNo\":\"901\",\"coldChain\":$2,
+    \"estimatedDeliveryAt\":\"$4\",
+    \"userName\":\"张三\",\"userPhone\":\"13800000001\"}" | jq -r '.id'
+}
+
+# 连续三次电梯满载：ER1->full->ER2->full->ER3->full（触发等待策略）
+three_full() { # orderId fromFloor toFloor -> 输出 "ER1 ER2 ER3 FINAL"
+  local oid=$1 f=$2 t=$3
+  local er1 er2 er3 final
+  er1=$(req POST "/api/deliveries/$oid/request-elevator" "$OPS" "{\"fromFloor\":$f,\"toFloor\":$t}" | jq -r .id)
+  er2=$(req POST "/api/elevator-requests/$er1/full" "$OPS" | jq -r .id)
+  er3=$(req POST "/api/elevator-requests/$er2/full" "$OPS" | jq -r .id)
+  final=$(req POST "/api/elevator-requests/$er3/full" "$OPS" | jq -r .id)
+  echo "$er1 $er2 $er3 $final"
+}
+
+gate_approve() { # orderId gateName
+  local g
+  g=$(req POST "/api/deliveries/$1/arrive-gate" "$OPS" "{\"gateName\":\"${2:-南门}\"}" | jq -r .id)
+  req POST "/api/access-requests/$g/approve" "$PROPERTY" >/dev/null
+}
+
 say "0. 认证与权限"
 UNAUTH=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/api/orders")
 check "未登录访问受保护接口返回401" "$UNAUTH" "401"
@@ -120,6 +145,114 @@ req POST "/api/deliveries/$O3/arrive-door" "$OPS" >/dev/null
 req POST "/api/deliveries/$O3/open-compartment" "$OPS" >/dev/null
 req POST "/api/deliveries/$O3/sign" "$OPS" '{"signBy":"李女士"}' >/dev/null
 check "满载重试后签收" "$(req GET "/api/orders/$O3" "$OPS" | jq -r .status)" "SIGNED"
+
+say "3.5 连续三次满载策略：下单基础配送费"
+O_FEE=$(new_order 1 false FOOD)
+check "新订单初始配送费=基础费5.00(分)" "$(req GET "/api/orders/$O_FEE" "$OPS" | jq -r '(.deliveryFee*100|floor)')" "500"
+req POST "/api/deliveries/$O_FEE/cancel" "$OPS" '{"reason":"费用校验用单"}' >/dev/null
+
+say "3.6 连续三次满载 -> 策略=继续等待（时效充裕+高楼层）-> 第四次派梯成功"
+O3W=$(new_order 2 false FOOD)
+req POST "/api/deliveries/$O3W/assign" "$OPS" '{"robotId":1}' >/dev/null
+gate_approve "$O3W"
+read -r W1 W2 W3 W4 <<< "$(three_full "$O3W" 1 13)"
+[ "$W3" != "$W4" ] && ok "第三次满载决策继续等待后产生第4次电梯请求#$W4" || bad "继续等待未重新请求电梯"
+check "连续满载计数=3" "$(req GET "/api/orders/$O3W" "$OPS" | jq -r .elevatorFullCount)" "3"
+check "等待策略" "$(req GET "/api/orders/$O3W" "$OPS" | jq -r .waitStrategy)" "WAIT_ELEVATOR"
+wait_event "$O3W" ELEVATOR_WAIT_STRATEGY && ok "ELEVATOR_WAIT_STRATEGY 事件" || bad "缺少策略决策事件"
+req GET "/api/deliveries/$O3W/events" "$OPS" \
+  | jq -e '[.[] | select(.eventType=="ELEVATOR_FULL")] | length == 3' >/dev/null \
+  && ok "ELEVATOR_FULL 事件恰好3次" || bad "ELEVATOR_FULL 次数不为3"
+req POST "/api/elevator-requests/$W4/assign" "$OPS" '{"carId":"1栋-客梯A"}' >/dev/null
+req POST "/api/elevator-requests/$W4/complete" "$OPS" >/dev/null
+check "乘梯成功后满载计数清零" "$(req GET "/api/orders/$O3W" "$OPS" | jq -r .elevatorFullCount)" "0"
+req POST "/api/deliveries/$O3W/arrive-door" "$OPS" >/dev/null
+req POST "/api/deliveries/$O3W/open-compartment" "$OPS" >/dev/null
+req POST "/api/deliveries/$O3W/sign" "$OPS" '{"signBy":"继续等待单用户"}' >/dev/null
+check "继续等待策略订单签收" "$(req GET "/api/orders/$O3W" "$OPS" | jq -r .status)" "SIGNED"
+
+say "3.7 连续三次满载 -> 策略=人工接力（低楼层）-> 身份/开仓/接货/签收/费用重算/分阶段责任"
+PAST_ETA=$(date +%Y-%m-%dT%H:%M:%S)
+O3R=$(new_order_eta 1 false MEDICINE "$PAST_ETA")
+req POST "/api/deliveries/$O3R/assign" "$OPS" '{"robotId":1}' >/dev/null
+gate_approve "$O3R"
+read -r R1 R2 R3 RF <<< "$(three_full "$O3R" 1 6)"
+[ "$RF" = "$R3" ] && ok "人工接力策略不再产生新电梯请求" || bad "人工接力策略仍在重试电梯"
+check "人工接力策略" "$(req GET "/api/orders/$O3R" "$OPS" | jq -r .waitStrategy)" "MANUAL_RELAY"
+check "策略后订单仍等待电梯(等派单)" "$(req GET "/api/orders/$O3R" "$OPS" | jq -r .status)" "ELEVATOR_WAIT"
+HO=$(req POST /api/relays "$OPS" "{\"deliveryId\":$O3R,\"courierName\":\"接力员老赵\",\"courierPhone\":\"13900001111\",\"courierCompany\":\"物业便民配送队\",\"courierEmployeeNo\":\"EMP-88\"}")
+HID=$(echo "$HO" | jq -r .id)
+[ -n "$HID" ] && [ "$HID" != "null" ] && ok "生成接力交接单#$HID 并登记人员身份" || bad "接力派单失败"
+check "派单后订单状态" "$(req GET "/api/orders/$O3R" "$OPS" | jq -r .status)" "RELAYING"
+check "接力重算费用=5+8+0.5*5=15.50(分)" "$(echo "$HO" | jq -r '(.fee*100|floor)')" "1550"
+check "订单费用同步重算(分)" "$(req GET "/api/orders/$O3R" "$OPS" | jq -r '(.deliveryFee*100|floor)')" "1550"
+wait_event "$O3R" RELAY_DISPATCHED && ok "RELAY_DISPATCHED 事件(含身份)" || bad "缺少 RELAY_DISPATCHED"
+wait_event "$O3R" RELAY_FEE_RECALCULATED && ok "RELAY_FEE_RECALCULATED 事件" || bad "缺少费用重算事件"
+req POST "/api/relays/$HID/open-compartment" "$OPS" >/dev/null
+wait_event "$O3R" RELAY_COMPARTMENT_OPENED && ok "仓门开启 RELAY_COMPARTMENT_OPENED 事件" || bad "缺少仓门开启事件"
+# 接货时发现损坏：商品此前在机器人载物仓 -> 机器人等待阶段责任
+req POST "/api/relays/$HID/handover" "$OPS" '{"damageReported":true,"damageNote":"汤品外包装有挤压破损"}' >/dev/null
+wait_event "$O3R" RELAY_HANDOVER && ok "RELAY_HANDOVER 接货事件" || bad "缺少接货事件"
+wait_event "$O3R" DAMAGE_REPORTED && ok "DAMAGE_REPORTED 事件" || bad "缺少损坏上报事件"
+check "接货后机器人释放" "$(req GET "/api/robots?communityId=1" "$OPS" | jq -r '.[] | select(.id==1) | .status')" "IDLE"
+ROBOT_DAMAGE_CASE=$(req GET "/api/cs/cases?caseType=RELAY_DAMAGE" "$CS" | jq -r "[.[] | select(.deliveryId==$O3R)] | .[0].id // empty")
+[ -n "$ROBOT_DAMAGE_CASE" ] \
+  && check "接货损坏责任=机器人等待阶段(ROBOT_VENDOR)" \
+       "$(req GET "/api/cs/cases?caseType=RELAY_DAMAGE" "$CS" | jq -r ".[] | select(.id==$ROBOT_DAMAGE_CASE) | .responsibility")" "ROBOT_VENDOR" \
+  || bad "未生成接货损坏工单"
+# ETA 已过 -> 接力送达签收时自动按人工接力阶段延迟定责
+req POST "/api/relays/$HID/sign" "$OPS" '{"signBy":"药品用户陈先生"}' >/dev/null
+check "接力签收后订单状态" "$(req GET "/api/orders/$O3R" "$OPS" | jq -r .status)" "SIGNED"
+wait_event "$O3R" RELAY_SIGNED && ok "RELAY_SIGNED 事件" || bad "缺少 RELAY_SIGNED"
+DELAY_CASE=$(req GET "/api/cs/cases?caseType=RELAY_DELAY" "$CS" | jq -r "[.[] | select(.deliveryId==$O3R)] | .[0].id // empty")
+[ -n "$DELAY_CASE" ] \
+  && check "接力延迟责任=人工接力阶段(RELAY_COURIER)" \
+       "$(req GET "/api/cs/cases?caseType=RELAY_DELAY" "$CS" | jq -r ".[] | select(.id==$DELAY_CASE) | .responsibility")" "RELAY_COURIER" \
+  || bad "未生成接力延迟工单"
+
+say "3.8 人工接力阶段商品损坏 -> RELAY_COURIER 责任 + 减免接力服务费并重算费用"
+O3R2=$(new_order 1 false GROCERY)
+req POST "/api/deliveries/$O3R2/assign" "$OPS" '{"robotId":1}' >/dev/null
+gate_approve "$O3R2"
+three_full "$O3R2" 1 6 >/dev/null
+HID2=$(req POST /api/relays "$OPS" "{\"deliveryId\":$O3R2,\"courierName\":\"接力员小钱\",\"courierEmployeeNo\":\"EMP-99\"}" | jq -r .id)
+req POST "/api/relays/$HID2/open-compartment" "$OPS" >/dev/null
+req POST "/api/relays/$HID2/handover" "$OPS" >/dev/null
+req POST "/api/relays/$HID2/sign" "$OPS" '{"signBy":"商超用户孙女士","damageReported":true,"damageNote":"鸡蛋破碎6枚"}' >/dev/null
+check "接力损坏后费用减免=5+0.5*5=7.50(分)" "$(req GET "/api/orders/$O3R2" "$OPS" | jq -r '(.deliveryFee*100|floor)')" "750"
+check "交接单记录损坏" "$(req GET "/api/relays/$HID2" "$CS" | jq -r .damageReported)" "true"
+check "接力损坏责任" "$(req GET "/api/cs/cases?caseType=RELAY_DAMAGE" "$CS" | jq -r "[.[] | select(.deliveryId==$O3R2)][0].responsibility // empty")" "RELAY_COURIER"
+
+say "3.9 连续三次满载 -> 策略=通知用户下楼取件（时效紧急+高楼层）-> 楼下签收"
+O3U=$(req POST /api/orders "$OPS" '{
+    "orderType":"FOOD","communityId":1,"buildingId":1,
+    "unitNo":"2单元","roomNo":"1801","coldChain":false,
+    "userName":"紧急用户","userPhone":"13800009999"}' | jq -r .id)
+req POST "/api/deliveries/$O3U/assign" "$OPS" '{"robotId":1}' >/dev/null
+gate_approve "$O3U"
+three_full "$O3U" 1 18 >/dev/null
+check "楼下取件策略" "$(req GET "/api/orders/$O3U" "$OPS" | jq -r .waitStrategy)" "USER_PICKUP_DOWNSTAIRS"
+check "订单状态=DOWNSTAIRS_PICKUP" "$(req GET "/api/orders/$O3U" "$OPS" | jq -r .status)" "DOWNSTAIRS_PICKUP"
+wait_event "$O3U" USER_DOWNSTAIRS_NOTIFIED && ok "USER_DOWNSTAIRS_NOTIFIED 通知事件" || bad "缺少下楼通知事件"
+check "下楼短信+小程序双通道" "$(req GET "/api/notifications?deliveryId=$O3U" "$OPS" | jq 'length')" "2"
+check "楼下取件未开仓不能普通签收(409)" "$(req POST "/api/deliveries/$O3U/sign" "$OPS" '{"signBy":"x"}' | jq -r .status)" "409"
+req POST "/api/deliveries/$O3U/downstairs-open-compartment" "$OPS" >/dev/null
+req POST "/api/deliveries/$O3U/downstairs-sign" "$OPS" '{"signBy":"紧急用户本人","damageReported":true,"damageNote":"餐盒已被打开过"}' >/dev/null
+check "楼下签收后状态" "$(req GET "/api/orders/$O3U" "$OPS" | jq -r .status)" "SIGNED"
+wait_event "$O3U" DOWNSTAIRS_SIGNED && ok "DOWNSTAIRS_SIGNED 事件" || bad "缺少 DOWNSTAIRS_SIGNED"
+check "取件阶段损坏责任=USER" "$(req GET "/api/cs/cases?caseType=PICKUP_DAMAGE" "$CS" | jq -r "[.[] | select(.deliveryId==$O3U)][0].responsibility // empty")" "USER"
+
+say "3.10 通知下楼取件后用户超时未取 -> 自动退回（等待巡检，DOWNSTAIRS_PICKUP_TIMEOUT_SECONDS 需较短）"
+O3T=$(req POST /api/orders "$OPS" '{
+    "orderType":"FOOD","communityId":1,"buildingId":1,
+    "unitNo":"3单元","roomNo":"1701","coldChain":false,
+    "userName":"超时下楼用户","userPhone":"13800007777"}' | jq -r .id)
+req POST "/api/deliveries/$O3T/assign" "$OPS" '{"robotId":1}' >/dev/null
+gate_approve "$O3T"
+three_full "$O3T" 1 18 >/dev/null
+if wait_status "$O3T" RETURNING 90; then ok "下楼超时未取自动进入退回"; else bad "下楼取件未进入退回流程"; fi
+req POST "/api/deliveries/$O3T/confirm-return" "$OPS" >/dev/null
+check "下楼超时退回完成" "$(req GET "/api/orders/$O3T" "$OPS" | jq -r .status)" "RETURNED"
 
 say "4. 异常：楼道施工 -> 避障停留+路线调整 -> 投诉送错楼栋 -> 客服结案"
 O4=$(new_order 1 false FOOD)

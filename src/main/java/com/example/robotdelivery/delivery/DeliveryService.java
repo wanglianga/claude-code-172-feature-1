@@ -43,7 +43,8 @@ public class DeliveryService {
     private static final Set<DeliveryStatus> RETURN_ALLOWED = EnumSet.of(
             DeliveryStatus.ASSIGNED, DeliveryStatus.ACCESS_PENDING, DeliveryStatus.ENTERING,
             DeliveryStatus.ELEVATOR_WAIT, DeliveryStatus.ON_FLOOR, DeliveryStatus.WAITING_PICKUP,
-            DeliveryStatus.COMPARTMENT_OPEN, DeliveryStatus.EXCEPTION);
+            DeliveryStatus.COMPARTMENT_OPEN, DeliveryStatus.EXCEPTION,
+            DeliveryStatus.DOWNSTAIRS_PICKUP);
 
     private final DeliveryOrderRepository orderRepository;
     private final RobotRepository robotRepository;
@@ -178,6 +179,69 @@ public class DeliveryService {
         return order;
     }
 
+    /** 电梯连续满载、通知用户下楼取件后，用户在大堂打开机器人物料仓（用户取件阶段） */
+    @Transactional
+    public DeliveryOrder openCompartmentDownstairs(Long orderId) {
+        DeliveryOrder order = mustGet(orderId);
+        requireStatus(order, DeliveryStatus.DOWNSTAIRS_PICKUP);
+        order.setStatus(DeliveryStatus.COMPARTMENT_OPEN);
+        orderRepository.save(order);
+        Map<String, Object> payload = basePayload(order);
+        payload.put("scene", "DOWNSTAIRS_PICKUP");
+        eventService.emit(order.getId(), order.getCommunity().getId(),
+                EventType.COMPARTMENT_OPENED, EventActor.USER, payload);
+        return order;
+    }
+
+    /**
+     * 用户下楼取件签收：商品损坏/延迟按"用户取件阶段"判定责任（用户责任）。
+     */
+    @Transactional
+    public DeliveryOrder signDownstairs(Long orderId, String signBy,
+                                        boolean damageReported, String damageNote) {
+        DeliveryOrder order = mustGet(orderId);
+        requireStatus(order, DeliveryStatus.COMPARTMENT_OPEN);
+        if (order.getWaitStrategy() != com.example.robotdelivery.elevator.ElevatorWaitStrategy.USER_PICKUP_DOWNSTAIRS) {
+            throw ApiException.conflict("该订单非用户下楼取件场景，请使用普通签收接口");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        order.setStatus(DeliveryStatus.SIGNED);
+        order.setSignedAt(now);
+        order.setDownstairsPickupAt(now);
+        orderRepository.save(order);
+        releaseRobotAndCompartment(order);
+
+        boolean onTime = order.getEstimatedDeliveryAt() == null || !now.isAfter(order.getEstimatedDeliveryAt());
+        Map<String, Object> payload = basePayload(order);
+        payload.put("signBy", signBy);
+        payload.put("scene", "DOWNSTAIRS_PICKUP");
+        payload.put("durationSeconds", Duration.between(order.getCreatedAt(), now).getSeconds());
+        payload.put("onTime", onTime);
+        payload.put("damageReported", damageReported);
+        eventService.emit(order.getId(), order.getCommunity().getId(),
+                EventType.DOWNSTAIRS_SIGNED, EventActor.USER, payload);
+        eventService.emit(order.getId(), order.getCommunity().getId(),
+                EventType.SIGNED, EventActor.USER, payload);
+
+        if (damageReported) {
+            String note = "用户下楼取件开仓后发现商品损坏"
+                    + (damageNote == null || damageNote.isBlank() ? "" : "：" + damageNote);
+            Map<String, Object> issuePayload = basePayload(order);
+            issuePayload.put("stage", "USER_PICKUP");
+            issuePayload.put("responsibility", Responsibility.USER.name());
+            issuePayload.put("note", note);
+            eventService.emit(order.getId(), order.getCommunity().getId(),
+                    EventType.DAMAGE_REPORTED, EventActor.USER, "USER_PICKUP", null, issuePayload);
+            csService.openCase(orderId, CaseType.PICKUP_DAMAGE, Responsibility.USER, note, null);
+        }
+        if (!onTime) {
+            csService.openCase(orderId, CaseType.RELAY_DELAY, Responsibility.USER,
+                    "用户下楼取件签收时间晚于预计送达时间 " + order.getEstimatedDeliveryAt()
+                            + "（用户取件阶段延迟）", null);
+        }
+        return order;
+    }
+
     /** 载物仓打不开：设备故障，触发客服介入 */
     @Transactional
     public DeliveryOrder reportCompartmentFault(Long orderId) {
@@ -201,6 +265,9 @@ public class DeliveryService {
     public DeliveryOrder sign(Long orderId, String signBy) {
         DeliveryOrder order = mustGet(orderId);
         requireStatus(order, DeliveryStatus.COMPARTMENT_OPEN);
+        if (order.getWaitStrategy() == com.example.robotdelivery.elevator.ElevatorWaitStrategy.USER_PICKUP_DOWNSTAIRS) {
+            throw ApiException.conflict("该订单为通知用户下楼取件场景，请使用楼下签收接口 downstairs-sign");
+        }
         order.setStatus(DeliveryStatus.SIGNED);
         order.setSignedAt(LocalDateTime.now());
         orderRepository.save(order);

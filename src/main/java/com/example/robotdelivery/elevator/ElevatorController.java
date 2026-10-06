@@ -46,7 +46,10 @@ public class ElevatorController {
         return elevatorService.assign(id, request.carId());
     }
 
-    @Operation(summary = "电梯系统上报满载（机器人自动等待下一趟并重新请求）")
+    @Operation(summary = "电梯系统上报满载",
+            description = "前两次满载：机器人自动等待下一趟并重新请求；"
+                    + "连续第三次满载：按订单时效/电量/楼层高度决策继续等待、人工接力或通知用户下楼取件，"
+                    + "返回值为人工接力/下楼取件场景下最后一次满载请求（无新重试请求）")
     @RequireRole({Role.OPS, Role.ADMIN})
     @PostMapping("/{id}/full")
     public ElevatorRequest full(@PathVariable Long id) {

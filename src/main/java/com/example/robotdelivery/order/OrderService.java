@@ -9,6 +9,7 @@ import com.example.robotdelivery.config.DeliveryProperties;
 import com.example.robotdelivery.event.DeliveryEventService;
 import com.example.robotdelivery.event.EventActor;
 import com.example.robotdelivery.event.EventType;
+import com.example.robotdelivery.relay.FeeCalculator;
 import jakarta.persistence.criteria.Predicate;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
@@ -29,17 +30,20 @@ public class OrderService {
     private final BuildingRepository buildingRepository;
     private final DeliveryEventService eventService;
     private final DeliveryProperties properties;
+    private final FeeCalculator feeCalculator;
 
     public OrderService(DeliveryOrderRepository orderRepository,
                         CommunityRepository communityRepository,
                         BuildingRepository buildingRepository,
                         DeliveryEventService eventService,
-                        DeliveryProperties properties) {
+                        DeliveryProperties properties,
+                        FeeCalculator feeCalculator) {
         this.orderRepository = orderRepository;
         this.communityRepository = communityRepository;
         this.buildingRepository = buildingRepository;
         this.eventService = eventService;
         this.properties = properties;
+        this.feeCalculator = feeCalculator;
     }
 
     @Transactional
@@ -69,6 +73,9 @@ public class OrderService {
         if (coldChain) {
             order.setColdChainDeadline(LocalDateTime.now().plusSeconds(properties.getColdchainTimeoutSeconds()));
         }
+        FeeCalculator.FeeResult baseFee = feeCalculator.baseFee(order);
+        order.setDeliveryFee(baseFee.total());
+        order.setDeliveryFeeDetail(baseFee.detail());
         orderRepository.save(order);
 
         Map<String, Object> payload = new HashMap<>();

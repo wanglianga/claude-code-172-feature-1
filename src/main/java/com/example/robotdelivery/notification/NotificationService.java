@@ -45,6 +45,26 @@ public class NotificationService {
         return List.of(sms, mini);
     }
 
+    /**
+     * 电梯连续满载、决策为用户下楼取件时，通知用户到楼栋大堂/电梯厅从机器人取件。
+     */
+    public List<Notification> notifyDownstairsPickup(DeliveryOrder order, int fullCount) {
+        String content = String.format(
+                "【社区配送】您的%s订单%s所在%s%s栋电梯已连续%d次满载，机器人无法上楼。"
+                        + "请您前往楼栋大堂/电梯厅从载物仓%s号仓取件，给您带来不便十分抱歉。",
+                TYPE_CN.getOrDefault(order.getOrderType(), ""),
+                order.getOrderNo(),
+                order.getCommunity().getName(),
+                order.getBuilding().getName(),
+                fullCount,
+                order.getCompartmentNo());
+        Notification sms = save(order.getId(), NotifyChannel.SMS, order.getUserPhone(), content);
+        Notification mini = save(order.getId(), NotifyChannel.MINI_PROGRAM, order.getUserName(), content);
+        log.info("已通知用户下楼取件: deliveryId={} phone={} fullCount={}",
+                order.getId(), order.getUserPhone(), fullCount);
+        return List.of(sms, mini);
+    }
+
     private Notification save(Long deliveryId, NotifyChannel channel, String target, String content) {
         Notification notification = new Notification();
         notification.setDeliveryId(deliveryId);

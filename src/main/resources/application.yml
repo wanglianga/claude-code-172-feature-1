@@ -4,6 +4,9 @@ server:
 spring:
   application:
     name: robot-delivery
+  jackson:
+    generator:
+      write-bigdecimal-as-plain: true   # BigDecimal(如配送费)保留 5.00/15.50 两位小数输出
   datasource:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:robot_delivery}
     username: ${DB_USER:postgres}
@@ -36,6 +39,15 @@ delivery:
   low-battery-threshold: ${LOW_BATTERY_THRESHOLD:20}          # 低电量阈值（%）
   scheduler-interval-ms: ${SCHEDULER_INTERVAL_MS:10000}       # 超时巡检间隔
   scheduler-enabled: ${SCHEDULER_ENABLED:true}
+  # 电梯满载等待策略
+  elevator-full-threshold: ${ELEVATOR_FULL_THRESHOLD:3}           # 连续满载失败次数阈值
+  urgent-ahead-seconds: ${URGENT_AHEAD_SECONDS:900}               # 距预计送达少于该秒数视为时效紧急
+  elevator-wait-battery-threshold: ${ELEVATOR_WAIT_BATTERY_THRESHOLD:40} # 候梯电量余量阈值（%）
+  high-floor-threshold: ${HIGH_FLOOR_THRESHOLD:12}                # 楼层差达到该值视为高楼层
+  downstairs-pickup-timeout-seconds: ${DOWNSTAIRS_PICKUP_TIMEOUT_SECONDS:300} # 用户下楼取件等待时限
+  base-delivery-fee: ${BASE_DELIVERY_FEE:5.00}                    # 基础配送费（元）
+  relay-service-fee: ${RELAY_SERVICE_FEE:8.00}                    # 人工接力服务费（元）
+  relay-floor-fee: ${RELAY_FLOOR_FEE:0.50}                        # 人工接力每层加收（元/层）
 
 springdoc:
   swagger-ui:

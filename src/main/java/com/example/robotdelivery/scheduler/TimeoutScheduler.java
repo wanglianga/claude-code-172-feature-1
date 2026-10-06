@@ -58,6 +58,7 @@ public class TimeoutScheduler {
         }
         try {
             checkPickupTimeout();
+            checkDownstairsPickupTimeout();
             checkColdChainTimeout();
             checkElevatorTimeout();
         } catch (Exception e) {
@@ -85,6 +86,33 @@ public class TimeoutScheduler {
             csService.openCase(order.getId(), CaseType.PICKUP_TIMEOUT, Responsibility.USER,
                     "用户超时未取件，机器人退回配送站", null);
             log.info("订单超时未取，进入退回流程: orderNo={}", order.getOrderNo());
+        }
+    }
+
+    /** 用户下楼取件超时：通知下楼后超过时限仍未来取（尚未开仓）-> 自动退回（用户取件阶段责任） */
+    private void checkDownstairsPickupTimeout() {
+        LocalDateTime deadline = LocalDateTime.now()
+                .minusSeconds(properties.getDownstairsPickupTimeoutSeconds());
+        // 用户一旦开仓即代表已到机器人旁，不再自动退回，故只巡检 DOWNSTAIRS_PICKUP
+        List<DeliveryOrder> expired = orderRepository.findDownstairsPickupExpired(
+                EnumSet.of(DeliveryStatus.DOWNSTAIRS_PICKUP), deadline);
+        for (DeliveryOrder order : expired) {
+            order.setPickupTimedOut(true);
+            order.setStatus(DeliveryStatus.RETURNING);
+            order.setReturnReason("通知用户下楼取件后超时未取");
+            orderRepository.save(order);
+
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("orderNo", order.getOrderNo());
+            payload.put("downstairsNotifiedAt",
+                    order.getDownstairsNotifiedAt() == null ? null : order.getDownstairsNotifiedAt().toString());
+            payload.put("timeoutSeconds", properties.getDownstairsPickupTimeoutSeconds());
+            payload.put("stage", "USER_PICKUP");
+            eventService.emit(order.getId(), order.getCommunity().getId(),
+                    EventType.PICKUP_TIMEOUT, EventActor.SYSTEM, "DOWNSTAIRS_PICKUP", null, payload);
+            csService.openCase(order.getId(), CaseType.PICKUP_TIMEOUT, Responsibility.USER,
+                    "电梯连续满载通知用户下楼取件，用户超时未取件，机器人退回配送站（用户取件阶段）", null);
+            log.info("用户下楼取件超时，进入退回流程: orderNo={}", order.getOrderNo());
         }
     }
 
