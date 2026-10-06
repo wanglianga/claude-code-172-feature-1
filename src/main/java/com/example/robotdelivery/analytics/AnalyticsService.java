@@ -54,6 +54,14 @@ public class AnalyticsService {
                 communityId, EventType.ELEVATOR_FULL.name());
         long elevatorTimeout = eventRepository.countByCommunityIdAndEventType(
                 communityId, EventType.ELEVATOR_TIMEOUT.name());
+        long elevatorFullStrategy = eventRepository.countByCommunityIdAndEventType(
+                communityId, EventType.ELEVATOR_FULL_STRATEGY.name());
+        long relayByFull = eventRepository.countByCommunityIdAndEventTypeAndReason(
+                communityId, EventType.MANUAL_RELAY.name(), "ELEVATOR_FULL");
+        long userDownstairsNotified = eventRepository.countByCommunityIdAndEventTypeAndReason(
+                communityId, EventType.USER_NOTIFIED.name(), "DOWNSTAIRS");
+        long manualRelay = eventRepository.countByCommunityIdAndEventType(
+                communityId, EventType.MANUAL_RELAY.name());
         long nightRestricted = eventRepository.countByCommunityIdAndEventType(
                 communityId, EventType.NIGHT_RESTRICTED.name());
         long accessDenied = eventRepository.countByCommunityIdAndEventType(
@@ -78,6 +86,10 @@ public class AnalyticsService {
         result.put("routeAdjustments", routeAdjustments);
         result.put("elevatorFullCount", elevatorFull);
         result.put("elevatorTimeoutCount", elevatorTimeout);
+        result.put("elevatorFullStrategyCount", elevatorFullStrategy);
+        result.put("relayByElevatorFullCount", relayByFull);
+        result.put("userDownstairsNotifyCount", userDownstairsNotified);
+        result.put("manualRelayCount", manualRelay);
         result.put("nightRestrictedCount", nightRestricted);
         result.put("accessDeniedCount", accessDenied);
         result.put("lowBatteryCount", lowBattery);
@@ -130,6 +142,9 @@ public class AnalyticsService {
             long inProgress = total - signed - returned - cancelled;
             long coldChainTimeouts = list.stream().filter(DeliveryOrder::isColdChainTimedOut).count();
             long pickupTimeouts = list.stream().filter(DeliveryOrder::isPickupTimedOut).count();
+            long relayed = list.stream().filter(o -> o.getRelayCourier() != null).count();
+            long relayFees = list.stream().mapToInt(DeliveryOrder::getRelayFeeCents).sum();
+            long totalFees = list.stream().mapToInt(DeliveryOrder::getTotalFeeCents).sum();
             double avgSeconds = list.stream()
                     .filter(o -> o.getSignedAt() != null)
                     .mapToLong(o -> Duration.between(o.getCreatedAt(), o.getSignedAt()).getSeconds())
@@ -151,6 +166,9 @@ public class AnalyticsService {
             row.put("avgDeliverySeconds", Math.round(avgSeconds));
             row.put("coldChainTimeouts", coldChainTimeouts);
             row.put("pickupTimeouts", pickupTimeouts);
+            row.put("relayed", relayed);
+            row.put("relaySurchargeTotalCents", relayFees);
+            row.put("deliveryFeeTotalCents", totalFees);
             rows.add(row);
         });
         return rows;

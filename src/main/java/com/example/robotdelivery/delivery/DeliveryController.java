@@ -147,14 +147,21 @@ public class DeliveryController {
         return deliveryService.confirmReturn(id);
     }
 
-    public record RelayRequest(@NotBlank String courierName) {
+    public record RelayRequest(String courierId,
+                               String courierName,
+                               String courierPhone,
+                               String triggerReason) {
     }
 
-    @Operation(summary = "人工接力", description = "机器人电量不足/故障时交由人工配送员完成配送")
-    @RequireRole({Role.OPS, Role.ADMIN})
+    @Operation(summary = "人工接力（发起交接）",
+            description = "机器人电量不足/故障/电梯连续满载时改由人工配送员完成：状态进入 RELAYING、"
+                    + "按楼层重算费用（平台侧原因免收接力附加费）、通知用户；"
+                    + "随后调用 /api/relays/by-delivery/{id}/accept（仓门开启+接货）→ deliver → sign 完成闭环")
+    @RequireRole({Role.OPS, Role.CS, Role.ADMIN})
     @PostMapping("/{id}/manual-relay")
     public DeliveryOrder manualRelay(@PathVariable Long id, @Valid @RequestBody RelayRequest request) {
-        return deliveryService.manualRelay(id, request.courierName());
+        return deliveryService.manualRelay(id, request.courierId(), request.courierName(),
+                request.courierPhone(), request.triggerReason());
     }
 
     public record RedeliverRequest(@NotNull Long buildingId) {

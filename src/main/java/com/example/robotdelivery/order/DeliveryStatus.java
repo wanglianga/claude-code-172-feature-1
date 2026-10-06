@@ -11,6 +11,8 @@ public enum DeliveryStatus {
     ELEVATOR_WAIT,      // 等待电梯
     ON_FLOOR,           // 已到达目标楼层
     WAITING_PICKUP,     // 已到门口，等待用户取件
+    WAITING_DOWNSTAIRS, // 电梯连续满载：已通知用户下楼到大堂取件
+    RELAYING,           // 人工接力进行中（配送员接手配送）
     COMPARTMENT_OPEN,   // 载物仓已打开
     SIGNED,             // 已签收（终态）
     RETURNING,          // 退回中
@@ -21,7 +23,8 @@ public enum DeliveryStatus {
     /** 仍处于配送途中（机器人被占用）的状态 */
     public static final Set<DeliveryStatus> ACTIVE = EnumSet.of(
             ASSIGNED, ACCESS_PENDING, ENTERING, ELEVATOR_WAIT, ON_FLOOR,
-            WAITING_PICKUP, COMPARTMENT_OPEN, RETURNING, EXCEPTION);
+            WAITING_PICKUP, WAITING_DOWNSTAIRS, RELAYING, COMPARTMENT_OPEN,
+            RETURNING, EXCEPTION);
 
     /** 终态 */
     public static final Set<DeliveryStatus> TERMINAL = EnumSet.of(SIGNED, RETURNED, CANCELLED);

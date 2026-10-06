@@ -14,6 +14,9 @@ import com.example.robotdelivery.notification.NotificationService;
 import com.example.robotdelivery.order.DeliveryOrder;
 import com.example.robotdelivery.order.DeliveryOrderRepository;
 import com.example.robotdelivery.order.DeliveryStatus;
+import com.example.robotdelivery.relay.FeeService;
+import com.example.robotdelivery.relay.RelayService;
+import com.example.robotdelivery.relay.RelayTriggerReason;
 import com.example.robotdelivery.robot.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,6 +46,7 @@ public class DeliveryService {
     private static final Set<DeliveryStatus> RETURN_ALLOWED = EnumSet.of(
             DeliveryStatus.ASSIGNED, DeliveryStatus.ACCESS_PENDING, DeliveryStatus.ENTERING,
             DeliveryStatus.ELEVATOR_WAIT, DeliveryStatus.ON_FLOOR, DeliveryStatus.WAITING_PICKUP,
+            DeliveryStatus.WAITING_DOWNSTAIRS, DeliveryStatus.RELAYING,
             DeliveryStatus.COMPARTMENT_OPEN, DeliveryStatus.EXCEPTION);
 
     private final DeliveryOrderRepository orderRepository;
@@ -53,6 +57,8 @@ public class DeliveryService {
     private final NotificationService notificationService;
     private final CsService csService;
     private final DeliveryProperties properties;
+    private final FeeService feeService;
+    private final RelayService relayService;
 
     public DeliveryService(DeliveryOrderRepository orderRepository,
                            RobotRepository robotRepository,
@@ -61,7 +67,9 @@ public class DeliveryService {
                            DeliveryEventService eventService,
                            NotificationService notificationService,
                            CsService csService,
-                           DeliveryProperties properties) {
+                           DeliveryProperties properties,
+                           FeeService feeService,
+                           RelayService relayService) {
         this.orderRepository = orderRepository;
         this.robotRepository = robotRepository;
         this.compartmentRepository = compartmentRepository;
@@ -70,6 +78,8 @@ public class DeliveryService {
         this.notificationService = notificationService;
         this.csService = csService;
         this.properties = properties;
+        this.feeService = feeService;
+        this.relayService = relayService;
     }
 
     /** 分配机器人与载物仓（冷藏订单优先冷藏仓） */
@@ -107,6 +117,11 @@ public class DeliveryService {
         order.setCompartmentNo(compartment.getCompartmentNo());
         order.setStatus(DeliveryStatus.ASSIGNED);
         order.setAssignedAt(LocalDateTime.now());
+        // 下单后首次计价：按房号推断目标楼层（实际乘梯楼层以电梯请求为准，接力时重算）
+        int fee = feeService.robotFee(order, FeeService.floorFromRoomNo(order.getRoomNo()));
+        order.setDeliveryFeeCents(fee);
+        order.setTotalFeeCents(fee);
+        order.setFeeDetail("机器人配送费：基础费+楼层加价" + (order.isColdChain() ? "+冷藏附加费" : ""));
         orderRepository.save(order);
 
         Map<String, Object> payload = basePayload(order);
@@ -143,34 +158,46 @@ public class DeliveryService {
         return order;
     }
 
-    /** 到达用户门口：短信 + 小程序通知用户取件 */
+    /** 到达用户门口（或下楼取件时用户到达机器人所在大堂）：短信 + 小程序通知用户取件 */
     @Transactional
     public DeliveryOrder arriveDoor(Long orderId) {
         DeliveryOrder order = mustGet(orderId);
-        if (order.getStatus() != DeliveryStatus.ENTERING && order.getStatus() != DeliveryStatus.ON_FLOOR) {
+        if (order.getStatus() != DeliveryStatus.ENTERING
+                && order.getStatus() != DeliveryStatus.ON_FLOOR
+                && order.getStatus() != DeliveryStatus.WAITING_DOWNSTAIRS) {
             throw ApiException.conflict("当前状态[" + order.getStatus() + "]不允许上报到门（需先进入楼栋/到达楼层）");
         }
+        boolean downstairs = order.getStatus() == DeliveryStatus.WAITING_DOWNSTAIRS;
         order.setStatus(DeliveryStatus.WAITING_PICKUP);
-        order.setNotifiedAt(LocalDateTime.now());
+        if (order.getNotifiedAt() == null) {
+            order.setNotifiedAt(LocalDateTime.now());
+        }
         orderRepository.save(order);
 
         eventService.emit(order.getId(), order.getCommunity().getId(),
-                EventType.ARRIVED_AT_DOOR, EventActor.ROBOT, basePayload(order));
-        notificationService.notifyArrival(order);
+                EventType.ARRIVED_AT_DOOR, EventActor.ROBOT,
+                downstairs ? "DOWNSTAIRS" : null, null, basePayload(order));
+        // 到门（上楼）才需要通知；下楼取件的用户已在大堂，通知此前已发送
+        if (!downstairs) {
+            notificationService.notifyArrival(order);
 
-        Map<String, Object> payload = basePayload(order);
-        payload.put("channels", "SMS,MINI_PROGRAM");
-        payload.put("userPhone", order.getUserPhone());
-        eventService.emit(order.getId(), order.getCommunity().getId(),
-                EventType.USER_NOTIFIED, EventActor.SYSTEM, payload);
+            Map<String, Object> payload = basePayload(order);
+            payload.put("channels", "SMS,MINI_PROGRAM");
+            payload.put("userPhone", order.getUserPhone());
+            eventService.emit(order.getId(), order.getCommunity().getId(),
+                    EventType.USER_NOTIFIED, EventActor.SYSTEM, payload);
+        }
         return order;
     }
 
-    /** 用户通过小程序/按键打开载物仓 */
+    /** 用户通过小程序/按键打开载物仓（含下楼到大堂后开仓） */
     @Transactional
     public DeliveryOrder openCompartment(Long orderId) {
         DeliveryOrder order = mustGet(orderId);
-        requireStatus(order, DeliveryStatus.WAITING_PICKUP);
+        if (order.getStatus() != DeliveryStatus.WAITING_PICKUP
+                && order.getStatus() != DeliveryStatus.WAITING_DOWNSTAIRS) {
+            throw ApiException.conflict("当前状态[" + order.getStatus() + "]不允许开仓取件");
+        }
         order.setStatus(DeliveryStatus.COMPARTMENT_OPEN);
         orderRepository.save(order);
         eventService.emit(order.getId(), order.getCommunity().getId(),
@@ -196,11 +223,13 @@ public class DeliveryService {
         return order;
     }
 
-    /** 用户签收 */
+    /** 用户签收（含下楼到大堂取件签收） */
     @Transactional
     public DeliveryOrder sign(Long orderId, String signBy) {
         DeliveryOrder order = mustGet(orderId);
-        requireStatus(order, DeliveryStatus.COMPARTMENT_OPEN);
+        if (order.getStatus() != DeliveryStatus.COMPARTMENT_OPEN) {
+            throw ApiException.conflict("当前状态[" + order.getStatus() + "]不允许签收（需先打开载物仓）");
+        }
         order.setStatus(DeliveryStatus.SIGNED);
         order.setSignedAt(LocalDateTime.now());
         orderRepository.save(order);
@@ -208,6 +237,7 @@ public class DeliveryService {
 
         Map<String, Object> payload = basePayload(order);
         payload.put("signBy", signBy);
+        payload.put("downstairsPickup", order.getDownstairsNotifiedAt() != null);
         payload.put("durationSeconds", Duration.between(order.getCreatedAt(), order.getSignedAt()).getSeconds());
         payload.put("coldChainTimedOut", order.isColdChainTimedOut());
         payload.put("onTime", order.getEstimatedDeliveryAt() == null
@@ -253,25 +283,36 @@ public class DeliveryService {
         return order;
     }
 
-    /** 人工接力：机器人无法继续配送时交由人工配送员完成 */
+    /**
+     * 人工接力：机器人无法继续配送时交由人工配送员完成。
+     * 创建完整交接单、订单进入 RELAYING、作废未完成电梯请求、按楼层重新计算费用并通知用户；
+     * 后续经 accept（仓门开启+接货）→ deliver → sign 完成交接闭环（见 RelayController）。
+     */
     @Transactional
-    public DeliveryOrder manualRelay(Long orderId, String courierName) {
+    public DeliveryOrder manualRelay(Long orderId, String courierId, String courierName,
+                                     String courierPhone, String triggerReason) {
         DeliveryOrder order = mustGet(orderId);
         if (!RELAY_ALLOWED.contains(order.getStatus())) {
             throw ApiException.conflict("当前状态[" + order.getStatus() + "]不允许人工接力");
         }
-        order.setRelayCourier(courierName);
-        if (order.getStatus() == DeliveryStatus.EXCEPTION) {
-            order.setStatus(DeliveryStatus.ENTERING);
-        }
-        orderRepository.save(order);
-        releaseRobotAndCompartment(order);
-
-        Map<String, Object> payload = basePayload(order);
-        payload.put("courier", courierName);
-        eventService.emit(order.getId(), order.getCommunity().getId(),
-                EventType.MANUAL_RELAY, EventActor.OPS, payload);
+        RelayTriggerReason reason = resolveRelayReason(order, triggerReason);
+        relayService.dispatch(order, reason, courierId, courierName, courierPhone, null);
         return order;
+    }
+
+    /** 触发原因：显式指定优先；否则按订单现场情况推断（低电量→LOW_BATTERY，异常→ROBOT_FAULT） */
+    private RelayTriggerReason resolveRelayReason(DeliveryOrder order, String triggerReason) {
+        if (triggerReason != null && !triggerReason.isBlank()) {
+            return RelayTriggerReason.valueOf(triggerReason);
+        }
+        if (order.getRobot() != null
+                && order.getRobot().getBattery() < properties.getLowBatteryThreshold()) {
+            return RelayTriggerReason.LOW_BATTERY;
+        }
+        if (order.getStatus() == DeliveryStatus.EXCEPTION) {
+            return RelayTriggerReason.ROBOT_FAULT;
+        }
+        return RelayTriggerReason.MANUAL;
     }
 
     /** 送错楼栋后的改派：调整收货楼栋并重新进楼配送 */

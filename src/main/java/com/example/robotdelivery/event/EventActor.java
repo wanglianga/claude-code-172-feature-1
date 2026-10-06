@@ -9,6 +9,7 @@ public enum EventActor {
     PROPERTY,
     ELEVATOR,
     USER,
+    COURIER,   // 人工接力配送员
     OPS,
     CS
 }

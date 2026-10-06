@@ -71,6 +71,34 @@ public class DeliveryOrder {
     @Column(name = "relay_courier", length = 64)
     private String relayCourier;
 
+    /** 机器人配送费（分） */
+    @Column(name = "delivery_fee_cents", nullable = false)
+    private int deliveryFeeCents;
+
+    /** 人工接力附加费（分） */
+    @Column(name = "relay_fee_cents", nullable = false)
+    private int relayFeeCents;
+
+    /** 合计费用（分） */
+    @Column(name = "total_fee_cents", nullable = false)
+    private int totalFeeCents;
+
+    /** 费用说明 */
+    @Column(name = "fee_detail", length = 255)
+    private String feeDetail;
+
+    /** 连续电梯满载后判定的等待策略：CONTINUE_WAIT / MANUAL_RELAY / USER_DOWNSTAIRS */
+    @Column(name = "full_strategy", length = 20)
+    private String fullStrategy;
+
+    /** 同一乘梯位置连续满载失败次数（乘梯成功后清零） */
+    @Column(name = "full_fail_count", nullable = false)
+    private int fullFailCount;
+
+    /** 通知用户下楼取件时间 */
+    @Column(name = "downstairs_notified_at")
+    private LocalDateTime downstairsNotifiedAt;
+
     @Column(name = "assigned_at")
     private LocalDateTime assignedAt;
 

@@ -28,7 +28,13 @@ public enum EventType {
     COLDCHAIN_TIMEOUT,      // 冷藏订单超时
     RETURN_STARTED,         // 开始退回
     RETURNED,               // 退回完成
-    MANUAL_RELAY,           // 人工接力
+    MANUAL_RELAY,           // 人工接力启动
+    RELAY_COMPARTMENT_OPENED, // 人工接力：现场开启机器人载物仓交接
+    RELAY_HANDOVER,         // 人工接力：配送员接货（记录人员身份与接货时间）
+    RELAY_DELIVERED,        // 人工接力：配送员送达用户门口
+    FEE_RECALCULATED,       // 人工接力配送费用重新计算
+    ELEVATOR_FULL_STRATEGY, // 连续满载后的等待策略判定（继续等待/人工接力/用户下楼）
+    LIABILITY_JUDGED,       // 三阶段（机器人等待/人工接力/用户取件）责任判定
     COMPLAINT_FILED,        // 用户投诉（如送错楼栋）
     CS_INTERVENTION,        // 客服介入
     CS_CASE_CLOSED,         // 客服工单关闭

@@ -19,6 +19,9 @@ public interface DeliveryOrderRepository
     List<DeliveryOrder> findByStatusInAndNotifiedAtBefore(
             Collection<DeliveryStatus> statuses, LocalDateTime notifiedBefore);
 
+    List<DeliveryOrder> findByStatusAndDownstairsNotifiedAtBefore(
+            DeliveryStatus status, LocalDateTime notifiedBefore);
+
     List<DeliveryOrder> findByColdChainTrueAndColdChainTimedOutFalseAndStatusNotInAndColdChainDeadlineBefore(
             Collection<DeliveryStatus> excludedStatuses, LocalDateTime deadlineBefore);
 

@@ -36,6 +36,17 @@ delivery:
   low-battery-threshold: ${LOW_BATTERY_THRESHOLD:20}          # 低电量阈值（%）
   scheduler-interval-ms: ${SCHEDULER_INTERVAL_MS:10000}       # 超时巡检间隔
   scheduler-enabled: ${SCHEDULER_ENABLED:true}
+  # 电梯满载等待策略
+  elevator-full-threshold: ${ELEVATOR_FULL_THRESHOLD:3}       # 连续满载几次后触发策略判定
+  urgent-window-seconds: ${URGENT_WINDOW_SECONDS:600}         # 距时效截止不足该秒数视为紧迫
+  high-floor-threshold: ${HIGH_FLOOR_THRESHOLD:10}           # 目标楼层不低于该值视为高楼
+  downstairs-timeout-seconds: ${DOWNSTAIRS_TIMEOUT_SECONDS:${PICKUP_TIMEOUT_SECONDS:600}} # 用户下楼取件超时
+  relay-sla-seconds: ${RELAY_SLA_SECONDS:300}                               # 人工接力配送时效（接货到送达）
+  # 配送费用（分）
+  base-fee-cents: ${BASE_FEE_CENTS:500}                       # 基础配送费（默认5元）
+  per-floor-fee-cents: ${PER_FLOOR_FEE_CENTS:30}              # 每层加价（默认3角）
+  cold-chain-fee-cents: ${COLD_CHAIN_FEE_CENTS:200}            # 冷藏附加费（默认2元）
+  relay-surcharge-cents: ${RELAY_SURCHARGE_CENTS:300}          # 人工接力附加费（默认3元，平台侧原因触发免收）
 
 springdoc:
   swagger-ui:

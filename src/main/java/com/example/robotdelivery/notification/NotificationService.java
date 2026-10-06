@@ -30,7 +30,7 @@ public class NotificationService {
      */
     public List<Notification> notifyArrival(DeliveryOrder order) {
         String content = String.format(
-                "【社区配送】您的%s订单%s已送达%s%s栋%s单元%s，载物仓%s号仓，请尽快取件。",
+                "【社区配送】您的%s订单%s已送达%s%s栋%s%s，载物仓%s号仓，请尽快取件。",
                 TYPE_CN.getOrDefault(order.getOrderType(), ""),
                 order.getOrderNo(),
                 order.getCommunity().getName(),
@@ -42,6 +42,47 @@ public class NotificationService {
         Notification mini = save(order.getId(), NotifyChannel.MINI_PROGRAM, order.getUserName(), content);
         log.info("已通知用户取件: deliveryId={} phone={} channels=[SMS, MINI_PROGRAM]",
                 order.getId(), order.getUserPhone());
+        return List.of(sms, mini);
+    }
+
+    /**
+     * 电梯连续满载策略要求用户下楼取件：通知用户到楼栋大堂找机器人取件。
+     */
+    public List<Notification> notifyDownstairs(DeliveryOrder order, Integer fromFloor, int fullFailCount) {
+        String content = String.format(
+                "【社区配送】您的%s订单%s所在%s栋客梯连续%d次满载，机器人无法乘梯上楼，"
+                        + "请您移步至%d层大堂找机器人（载物仓%s号仓）取件，感谢配合。",
+                TYPE_CN.getOrDefault(order.getOrderType(), ""),
+                order.getOrderNo(),
+                order.getBuilding().getName(),
+                fullFailCount,
+                fromFloor == null ? 1 : fromFloor,
+                order.getCompartmentNo());
+        Notification sms = save(order.getId(), NotifyChannel.SMS, order.getUserPhone(), content);
+        Notification mini = save(order.getId(), NotifyChannel.MINI_PROGRAM, order.getUserName(), content);
+        log.info("已通知用户下楼取件: deliveryId={} phone={} fullFailCount={}",
+                order.getId(), order.getUserPhone(), fullFailCount);
+        return List.of(sms, mini);
+    }
+
+    /**
+     * 改人工接力后通知用户：配送员将代为送达。
+     *
+     * @param surchargeWaived 接力附加费是否由平台承担（平台侧原因触发时免收）
+     */
+    public List<Notification> notifyRelay(DeliveryOrder order, String courierName,
+                                          String triggerReasonText, boolean surchargeWaived) {
+        String feeText = surchargeWaived ? "接力附加费已由平台承担，您无需额外支付，" : "";
+        String content = String.format(
+                "【社区配送】您的%s订单%s因%s，已由人工配送员%s接力送上楼，%s请注意接听电话并取件。",
+                TYPE_CN.getOrDefault(order.getOrderType(), ""),
+                order.getOrderNo(),
+                triggerReasonText,
+                courierName,
+                feeText);
+        Notification sms = save(order.getId(), NotifyChannel.SMS, order.getUserPhone(), content);
+        Notification mini = save(order.getId(), NotifyChannel.MINI_PROGRAM, order.getUserName(), content);
+        log.info("已通知用户人工接力: deliveryId={} courier={}", order.getId(), courierName);
         return List.of(sms, mini);
     }
 

@@ -58,10 +58,35 @@ public class TimeoutScheduler {
         }
         try {
             checkPickupTimeout();
+            checkDownstairsTimeout();
             checkColdChainTimeout();
             checkElevatorTimeout();
         } catch (Exception e) {
             log.error("超时巡检执行失败", e);
+        }
+    }
+
+    /** 用户被通知下楼取件后超时未到大堂：进入退回流程 */
+    private void checkDownstairsTimeout() {
+        long timeout = properties.getDownstairsTimeoutSeconds();
+        LocalDateTime deadline = LocalDateTime.now().minusSeconds(timeout);
+        List<DeliveryOrder> expired = orderRepository
+                .findByStatusAndDownstairsNotifiedAtBefore(DeliveryStatus.WAITING_DOWNSTAIRS, deadline);
+        for (DeliveryOrder order : expired) {
+            order.setPickupTimedOut(true);
+            order.setStatus(DeliveryStatus.RETURNING);
+            order.setReturnReason("通知用户下楼取件后超时未取");
+            orderRepository.save(order);
+
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("orderNo", order.getOrderNo());
+            payload.put("downstairsNotifiedAt", order.getDownstairsNotifiedAt().toString());
+            payload.put("timeoutSeconds", timeout);
+            eventService.emit(order.getId(), order.getCommunity().getId(),
+                    EventType.PICKUP_TIMEOUT, EventActor.SYSTEM, "DOWNSTAIRS", null, payload);
+            csService.openCase(order.getId(), CaseType.PICKUP_TIMEOUT, Responsibility.USER,
+                    "电梯连续满载已通知用户下楼取件，用户超时未到，机器人退回配送站", null);
+            log.info("用户下楼取件超时，进入退回流程: orderNo={}", order.getOrderNo());
         }
     }
 
